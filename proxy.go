@@ -147,7 +147,7 @@ func (p *PgRewriteProxy) sendRewriteNotice(original, new string) error {
 	detail := dmp.DiffPrettyText(diffs)
 	not := &pgproto3.NoticeResponse{
 		Severity: "NOTICE",
-		Message:  "Query was rewritten",
+		Message:  "Query was compiled with dbt",
 		Detail:   detail,
 	}
 	return p.backend.Send(not)
@@ -157,7 +157,7 @@ func (p *PgRewriteProxy) sendRewriteNotice(original, new string) error {
 func (p *PgRewriteProxy) sendRewriteError(rewriteErr error) error {
 	not := &pgproto3.NoticeResponse{
 		Severity: "WARNING",
-		Message:  "Failed to rewrite query",
+		Message:  "Failed to compile dbt query",
 		Detail:   rewriteErr.Error(),
 	}
 	return p.backend.Send(not)

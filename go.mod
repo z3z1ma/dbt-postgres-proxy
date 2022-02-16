@@ -1,4 +1,4 @@
-module github.com/patientsknowbest/pg-rewrite-proxy
+module dbt-pg-proxy
 
 go 1.17
 
@@ -15,6 +15,7 @@ require (
 )
 
 require (
+	github.com/google/uuid v1.3.0 // indirect
 	github.com/jackc/pgconn v1.10.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20200714003250-2b9c44734f2b // indirect

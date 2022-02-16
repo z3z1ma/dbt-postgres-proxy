@@ -1,11 +1,141 @@
 package proxy
 
 import (
+	"bytes"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"log"
+	"net/http"
 	"strings"
+	"time"
 
-	lua "github.com/yuin/gopher-lua"
+	uuid "github.com/google/uuid"
 )
+
+// RPC protocol
+type CompileQueryArgs struct {
+	Timeout int    `json:"timeout"`
+	SQL     string `json:"sql"`
+	Name    string `json:"name"`
+}
+
+type CompileQueryRPC struct {
+	Jsonrpc string `json:"jsonrpc"`
+	Method  string `json:"method"`
+	ID      string `json:"id"`
+	Params  CompileQueryArgs `json:"params"`
+}
+
+type PendingRPC struct {
+	Result struct {
+		RequestToken    string `json:"request_token"`
+	} `json:"result"`
+	ID      string `json:"id"`
+	Jsonrpc string `json:"jsonrpc"`
+}
+
+type PollQueryArgs struct {
+	RequestToken string `json:"request_token"`
+	Logs         bool   `json:"logs"`
+	LogsStart    int    `json:"logs_start"`
+}
+
+type PollQuery struct {
+	Jsonrpc string `json:"jsonrpc"`
+	Method  string `json:"method"`
+	ID      string `json:"id"`
+	Params  PollQueryArgs `json:"params"`
+}
+
+type CompileQueryResults struct {
+	Result struct {
+		Results []struct {
+			CompiledSQL string        `json:"compiled_sql"`
+			GeneratedAt time.Time     `json:"generated_at"`
+			Logs        []interface{} `json:"logs"`
+			Node        struct {
+				Alias     string      `json:"alias"`
+				BuildPath interface{} `json:"build_path"`
+				Checksum  struct {
+					Checksum string `json:"checksum"`
+					Name     string `json:"name"`
+				} `json:"checksum"`
+				Columns struct {
+				} `json:"columns"`
+				Compiled     bool        `json:"compiled"`
+				CompiledPath interface{} `json:"compiled_path"`
+				CompiledSQL  string      `json:"compiled_sql"`
+				Config       struct {
+					Alias       interface{} `json:"alias"`
+					ColumnTypes struct {
+					} `json:"column_types"`
+					Database     interface{} `json:"database"`
+					Enabled      bool        `json:"enabled"`
+					FullRefresh  interface{} `json:"full_refresh"`
+					Materialized string      `json:"materialized"`
+					Meta         struct {
+					} `json:"meta"`
+					OnSchemaChange string `json:"on_schema_change"`
+					PersistDocs    struct {
+					} `json:"persist_docs"`
+					PostHook []interface{} `json:"post-hook"`
+					PreHook  []interface{} `json:"pre-hook"`
+					Quoting  struct {
+					} `json:"quoting"`
+					Schema interface{}   `json:"schema"`
+					Tags   []interface{} `json:"tags"`
+				} `json:"config"`
+				CreatedAt int    `json:"created_at"`
+				Database  string `json:"database"`
+				Deferred  bool   `json:"deferred"`
+				DependsOn struct {
+					Macros []interface{} `json:"macros"`
+					Nodes  []interface{} `json:"nodes"`
+				} `json:"depends_on"`
+				Description string `json:"description"`
+				Docs        struct {
+					Show bool `json:"show"`
+				} `json:"docs"`
+				ExtraCtes         []interface{} `json:"extra_ctes"`
+				ExtraCtesInjected bool          `json:"extra_ctes_injected"`
+				Fqn               []string      `json:"fqn"`
+				Meta              struct {
+				} `json:"meta"`
+				Name             string        `json:"name"`
+				OriginalFilePath string        `json:"original_file_path"`
+				PackageName      string        `json:"package_name"`
+				PatchPath        interface{}   `json:"patch_path"`
+				Path             string        `json:"path"`
+				RawSQL           string        `json:"raw_sql"`
+				Refs             []interface{} `json:"refs"`
+				RelationName     interface{}   `json:"relation_name"`
+				ResourceType     string        `json:"resource_type"`
+				RootPath         string        `json:"root_path"`
+				Schema           string        `json:"schema"`
+				Sources          []interface{} `json:"sources"`
+				Tags             []interface{} `json:"tags"`
+				UniqueID         string        `json:"unique_id"`
+			} `json:"node"`
+			RawSQL string `json:"raw_sql"`
+			Timing []struct {
+				CompletedAt time.Time `json:"completed_at"`
+				Name        string    `json:"name"`
+				StartedAt   time.Time `json:"started_at"`
+			} `json:"timing"`
+		} `json:"results"`
+		GeneratedAt time.Time     `json:"generated_at"`
+		ElapsedTime float64       `json:"elapsed_time"`
+		Logs        []interface{} `json:"logs"`
+		Tags        struct {
+			Command string `json:"command"`
+			Branch  string `json:"branch"`
+		} `json:"tags"`
+		Status string `json:"state"`
+	} `json:"result"`
+	ID      string `json:"id"`
+	Jsonrpc string `json:"jsonrpc"`
+}
 
 /// Rewriters will be constructed per goroutine, as some of them may have state that isn't safe to share
 type QueryRewriterFactory interface {
@@ -18,97 +148,101 @@ type QueryRewriter interface {
 	RewriteParse(string) (string, error)
 }
 
-// Dumb String replacement implementation
-type StringRewriter struct {
-	replacements map[string]string
+// dbt compiler implementation
+type DbtRewriter struct {
+	host string
+	port int
 }
 
-type StringRewriterFactory struct {
-	replacements map[string]string
+type DbtRewriterFactory struct {
+	host string
+	port int
 }
 
-func NewStringRewriterFactory(replacments map[string]string) *StringRewriterFactory {
-	return &StringRewriterFactory{
-		replacements: replacments,
+func NewDbtRewriterFactory(host string, port int) *DbtRewriterFactory {
+	return &DbtRewriterFactory{
+		host: host,
+		port: port,
 	}
 }
 
-func (r *StringRewriterFactory) Create() (QueryRewriter, error) {
-	return &StringRewriter{replacements: r.replacements}, nil
+func (r *DbtRewriterFactory) Create() (QueryRewriter, error) {
+	return &DbtRewriter{host: r.host, port: r.port}, nil
 }
 
-func (r *StringRewriter) RewriteQuery(query string) (string, error) {
+func (r *DbtRewriter) RewriteQuery(query string) (string, error) {
 	return r.rewriteInternal(query)
 }
 
-func (r *StringRewriter) RewriteParse(query string) (string, error) {
+func (r *DbtRewriter) RewriteParse(query string) (string, error) {
 	return r.rewriteInternal(query)
 }
 
-func (r *StringRewriter) rewriteInternal(query string) (string, error) {
-	for k, v := range r.replacements {
-		query = strings.ReplaceAll(query, k, v)
+func (r *DbtRewriter) rewriteInternal(query string) (string, error) {
+
+	if (strings.Contains(query, "{{") || strings.Contains(query, "{%")) {
+		// Basic yet effective check for Jinja infused query
+		serverURL := "http://" + r.host + ":" + fmt.Sprint(r.port) + "/jsonrpc"
+		taskId := uuid.New().String()
+		args := CompileQueryRPC{
+			Jsonrpc: "2.0",
+			Method: "compile_sql",
+			ID: taskId,
+			Params: CompileQueryArgs{
+				Timeout: 60,
+				SQL: base64.StdEncoding.EncodeToString([]byte(query)),
+				Name: "dbt_pg_proxy_query",
+			},
+		}
+		
+		body, _ := json.Marshal(args)
+		resp, err := http.Post(serverURL, "application/json", bytes.NewBuffer(body))
+		if err != nil {
+			log.Fatal("Error:", err)
+		}
+		var reply PendingRPC
+		json.NewDecoder(resp.Body).Decode(&reply)
+
+		pollingArgs := PollQuery{
+			Jsonrpc: "2.0",
+			Method: "poll",
+			ID: taskId,
+			Params: PollQueryArgs{
+				RequestToken: reply.Result.RequestToken,
+				Logs: true,
+				LogsStart: 1,
+			},
+		}
+
+		body, _ = json.Marshal(pollingArgs)
+		var queryResult CompileQueryResults
+		var compiledSQL string
+
+		for {
+			var result CompileQueryResults
+			resp, err = http.Post(serverURL, "application/json", bytes.NewBuffer(body))
+			if err != nil { log.Fatal("Error:", err) }
+			json.NewDecoder(resp.Body).Decode(&result)
+			if result.Result.Status == "running" { 
+				time.Sleep(100 * time.Millisecond)
+				continue
+			}
+			queryResult = result
+			break
+		}
+		
+		if queryResult.Result.Status == "success" {
+			compiledSQL = queryResult.Result.Results[0].CompiledSQL
+			query = compiledSQL
+			fmt.Println("")
+			fmt.Println("====================== dbt output ======================")
+			fmt.Println("")
+			fmt.Println(query)
+		} else {
+			return query, fmt.Errorf("failed to compile query with dbt, check for syntax errors")
+		}
+
 	}
+	
 	return query, nil
-}
-
-// LUA interpreter implementation
-type LuaQueryRewriter struct {
-	// It's not safe to share this between goroutines
-	l *lua.LState
-}
-
-type LuaQueryRewriterFactory struct {
-	luaFile string
-}
-
-func NewLuaQueryRewriterFactory(luaFile string) QueryRewriterFactory {
-	return &LuaQueryRewriterFactory{
-		luaFile: luaFile,
-	}
-}
-
-func (r *LuaQueryRewriterFactory) Create() (QueryRewriter, error) {
-	l := lua.NewState()
-	if err := l.DoFile(r.luaFile); err != nil {
-		return nil, err
-	}
-	return &LuaQueryRewriter{
-		l: l,
-	}, nil
-}
-
-func (r *LuaQueryRewriter) RewriteQuery(query string) (string, error) {
-	return r.rewriteInternal(query, "rewriteQuery")
-}
-
-func (r *LuaQueryRewriter) rewriteInternal(input, function string) (string, error) {
-	fn, ok := r.l.GetGlobal(function).(*lua.LFunction)
-	if !ok {
-		return input, fmt.Errorf("Unable to find %s function!", function)
-	}
-	err := r.l.CallByParam(lua.P{
-		Fn:      fn,
-		NRet:    1,
-		Protect: true,
-	}, lua.LString(input))
-	if err != nil {
-		return input, err
-	}
-	rValue := r.l.Get(-1)
-	defer r.l.Pop(1)
-	if str, ok := rValue.(lua.LString); ok {
-		return string(str), nil
-	} else {
-		return input, fmt.Errorf("Incorrect return type from rewrite function %s", rValue.Type())
-	}
-}
-
-func (r *LuaQueryRewriter) RewriteParse(query string) (string, error) {
-	return r.rewriteInternal(query, "rewriteParse")
-}
-
-func (r *LuaQueryRewriter) Close() error {
-	r.l.Close()
-	return nil
 }
