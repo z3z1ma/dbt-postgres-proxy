@@ -5,7 +5,10 @@ A reverse proxy for postgres which compiles queries in flight using a dbt rpc se
 
 Failure to rewrite the query will raise a NOTICE but it will not cause an error. It is likely in invalidly compiled dbt query will not be accepted by the database
 
-All other messages than Query are passed to the upstream unmodified. SSL connections are not supported.
+All other messages than Query are passed to the upstream unmodified. SSL connections are not supported. If you planned on using this transiently in production, would recommend using it on a bastion server with database traffic whitelisted for only that servers IP. Otherwise locally, it's fair game.
+
+Requires a **running dbt-rpc server to interface with**. The default arguments for the CLI flags point to the default host and port of the rpc server. Forward looking, the interface may be rewritten to interface with dbt-server when it is released or for more permissive licensing, a custom server solution. As is, this is a fantastic tool for development flows that can be utilized anywhere a postgres connection would (Tableau, SQLAlchemy, JDBC, etc) for interactive testing and dev. 
+
 
 ## Prerequisites:
 - Go 1.17 or greater
