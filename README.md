@@ -1,5 +1,5 @@
-dbt-pg-proxy
-================
+dbt-postgres-proxy
+==================
 
 A reverse proxy for postgres which compiles queries in flight using a dbt rpc server. This is both a PoC as well as a dev tool that allows rapid prototying dbt models directly from any tool which is capable of connecting to Postgres. Think dbeaver, datagrip, BI tools, SQLAlchemy, etc.
 
