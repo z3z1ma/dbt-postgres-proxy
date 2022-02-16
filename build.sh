@@ -6,6 +6,6 @@ do
         CGO_ENABLED=0 \
         GOOS=${os} \
         GOARCH=${arch} \
-        go build -o dbt-pg-proxy-${os}-${arch} cmd/main.go
+        go build -o ./bin/dbt-pg-proxy-${os}-${arch} cmd/main.go
     done
 done
